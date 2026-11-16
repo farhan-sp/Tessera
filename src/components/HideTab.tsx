@@ -150,7 +150,7 @@ export default function HideTab() {
       blob: r.blob,
     }));
     const zipBlob = await createZipFromShares(fileList);
-    downloadBlob(zipBlob, `split-key-set-${currentSetId || "shares"}.zip`);
+    downloadBlob(zipBlob, `tessera-set-${currentSetId || "shares"}.zip`);
   };
 
   // Uji pemulihan langsung dari gambar yang tidak ditandai hilang

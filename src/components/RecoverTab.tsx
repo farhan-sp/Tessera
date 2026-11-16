@@ -83,7 +83,7 @@ export default function RecoverTab() {
             results.push({
               file,
               valid: false,
-              error: "Bukan gambar Split-Key yang valid",
+              error: "Bukan gambar Tessera yang valid",
             });
           }
         } catch {

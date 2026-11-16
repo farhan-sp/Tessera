@@ -20,7 +20,7 @@ export default function Home() {
               <KeyRound className="h-4 w-4" />
             </div>
             <span className="font-semibold text-base tracking-tight text-zinc-900">
-              Split-Key
+              Tessera
             </span>
           </div>
 

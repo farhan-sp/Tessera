@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Split-Key Image Recovery",
+  title: "Tessera — Image Secret Recovery",
   description:
     "Pemulihan rahasia terdistribusi berbasis Shamir Secret Sharing dan Steganografi LSB pada gambar PNG.",
 };
