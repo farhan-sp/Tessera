@@ -192,7 +192,7 @@ export default function RecoverTab() {
         const text = new TextDecoder().decode(data);
         setResult({ type: "text", content: text });
       } else {
-        const blob = new Blob([data], { type: meta.mimeType ?? "image/png" });
+        const blob = new Blob([data as unknown as BlobPart], { type: meta.mimeType ?? "image/png" });
         const url = URL.createObjectURL(blob);
         setResult({
           type: "image",
