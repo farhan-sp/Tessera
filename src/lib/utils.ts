@@ -1,6 +1,8 @@
 /**
- * Utilitas: format header 13 byte dan payload wrapper.
+ * Utilitas: format header 13 byte, payload wrapper, dan file helper.
  */
+
+import JSZip from "jszip";
 
 // --- Header 13 byte ---
 // [0-1]  : Penanda "HX" (0x48 0x58)
@@ -11,7 +13,7 @@
 // [9-12] : panjang data bagian (uint32 big-endian)
 
 export interface EmbedHeader {
-  setId: Uint8Array;   // 4 byte
+  setId: Uint8Array; // 4 byte
   n: number;
   k: number;
   x: number;
@@ -36,9 +38,9 @@ export function buildHeader(
   buf[7] = k;
   buf[8] = x;
   // panjang data: big-endian uint32
-  buf[9]  = (dataLength >>> 24) & 0xff;
+  buf[9] = (dataLength >>> 24) & 0xff;
   buf[10] = (dataLength >>> 16) & 0xff;
-  buf[11] = (dataLength >>> 8)  & 0xff;
+  buf[11] = (dataLength >>> 8) & 0xff;
   buf[12] = dataLength & 0xff;
   return buf;
 }
@@ -57,6 +59,13 @@ export function parseHeader(bytes: Uint8Array): EmbedHeader | null {
   if (n < 2 || k < 2 || k > n || x < 1 || x > n || dataLength <= 0) return null;
 
   return { setId, n, k, x, dataLength };
+}
+
+/** Format ID set menjadi string heksadesimal pendek (misal: "A4F2C910") */
+export function formatSetId(setId: Uint8Array): string {
+  return Array.from(setId)
+    .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
+    .join("");
 }
 
 /** Membuat ID set acak 4 byte */
@@ -118,4 +127,27 @@ export function subsets<T>(arr: T[], size: number): T[][] {
   const withFirst = subsets(rest, size - 1).map((s) => [first, ...s]);
   const withoutFirst = subsets(rest, size);
   return [...withFirst, ...withoutFirst];
+}
+
+/** Unduh Blob ke browser pengguna */
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Kemas beberapa file gambar menjadi satu berkas ZIP */
+export async function createZipFromShares(
+  shares: { filename: string; blob: Blob }[]
+): Promise<Blob> {
+  const zip = new JSZip();
+  for (const s of shares) {
+    zip.file(s.filename, s.blob);
+  }
+  return zip.generateAsync({ type: "blob" });
 }

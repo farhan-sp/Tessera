@@ -119,3 +119,4 @@ export function combine(shares: Share[]): Uint8Array {
 
   return secret;
 }
+

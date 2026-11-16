@@ -1,25 +1,158 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import {
+  UploadCloud,
+  FileCheck2,
+  FileX,
+  LockOpen,
+  Copy,
+  Check,
+  Download,
+  AlertCircle,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { combine, type Share } from "@/lib/shamir";
 import { extractShare } from "@/lib/steganography";
-import { unwrapPayload, uint8Equal } from "@/lib/utils";
+import {
+  unwrapPayload,
+  uint8Equal,
+  formatBytes,
+  formatSetId,
+  downloadBlob,
+} from "@/lib/utils";
 
-interface ExtractedShare {
-  filename: string;
-  x: number;
-  n: number;
-  k: number;
-  setId: Uint8Array;
-  data: Uint8Array;
+interface InspectedFile {
+  file: File;
+  valid: boolean;
+  x?: number;
+  n?: number;
+  k?: number;
+  setId?: Uint8Array;
+  data?: Uint8Array;
+  error?: string;
 }
 
 export default function RecoverTab() {
   const [files, setFiles] = useState<File[]>([]);
+  const [inspected, setInspected] = useState<InspectedFile[]>([]);
+  const [isInspecting, setIsInspecting] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
-  const [result, setResult] = useState<{ type: "text" | "image"; content: string; filename?: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Hasil pemulihan
+  const [result, setResult] = useState<{
+    type: "text" | "image";
+    content: string;
+    blob?: Blob;
+    filename?: string;
+  } | null>(null);
+
+  // Inspeksi otomatis setiap kali berkas dipilih/dijatuhkan
+  useEffect(() => {
+    if (files.length === 0) {
+      setInspected([]);
+      return;
+    }
+
+    let isMounted = true;
+    setIsInspecting(true);
+
+    const inspectAll = async () => {
+      const results: InspectedFile[] = [];
+
+      for (const file of files) {
+        try {
+          const blob = new Blob([await file.arrayBuffer()], { type: file.type });
+          const res = await extractShare(blob);
+          if (res) {
+            results.push({
+              file,
+              valid: true,
+              x: res.header.x,
+              n: res.header.n,
+              k: res.header.k,
+              setId: res.header.setId,
+              data: res.shareData,
+            });
+          } else {
+            results.push({
+              file,
+              valid: false,
+              error: "Bukan gambar Split-Key yang valid",
+            });
+          }
+        } catch {
+          results.push({
+            file,
+            valid: false,
+            error: "Gagal membaca berkas",
+          });
+        }
+      }
+
+      if (isMounted) {
+        setInspected(results);
+        setIsInspecting(false);
+      }
+    };
+
+    inspectAll();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [files]);
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files?.length) {
+      const newFiles = Array.from(e.dataTransfer.files).filter(
+        (f) => f.type === "image/png" || f.name.endsWith(".png")
+      );
+      if (newFiles.length === 0) {
+        setError("Silakan masukkan berkas berekstensi .PNG");
+        return;
+      }
+      setFiles(newFiles);
+      setResult(null);
+      setError("");
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) {
+      setFiles(Array.from(e.target.files));
+      setResult(null);
+      setError("");
+    }
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+    setResult(null);
+  };
+
+  // Validasi status saat ini
+  const validShares = inspected.filter((f) => f.valid && f.data && f.x && f.setId);
+  const firstShare = validShares[0];
+  const requiredK = firstShare?.k ?? 0;
+  const totalN = firstShare?.n ?? 0;
+  const currentSetIdStr = firstShare?.setId ? formatSetId(firstShare.setId) : "";
+
+  // Cek konsistensi Set ID
+  const isSetConsistent = validShares.every(
+    (s) => s.setId && firstShare?.setId && uint8Equal(s.setId, firstShare.setId)
+  );
+
+  // Cek keunikan x
+  const uniqueXCount = new Set(validShares.map((s) => s.x)).size;
+  const hasEnoughShares = isSetConsistent && uniqueXCount >= requiredK && requiredK > 0;
 
   const handleRecover = useCallback(async () => {
     setError("");
@@ -27,60 +160,32 @@ export default function RecoverTab() {
     setLoading(true);
 
     try {
-      if (files.length === 0) throw new Error("Pilih minimal satu file PNG.");
-
-      // 1. Ekstrak semua bagian
-      const extracted: ExtractedShare[] = [];
-      for (let i = 0; i < files.length; i++) {
-        setProgress(`Membaca gambar ${i + 1}/${files.length}...`);
-        const blob = new Blob([await files[i].arrayBuffer()], { type: files[i].type });
-        const result = await extractShare(blob);
-        if (!result) {
-          throw new Error(`"${files[i].name}" bukan gambar yang mengandung bagian tersembunyi.`);
-        }
-        extracted.push({
-          filename: files[i].name,
-          x: result.header.x,
-          n: result.header.n,
-          k: result.header.k,
-          setId: result.header.setId,
-          data: result.shareData,
-        });
-      }
-
-      // 2. Validasi: semua harus dari set yang sama
-      const ref = extracted[0];
-      for (const s of extracted.slice(1)) {
-        if (!uint8Equal(s.setId, ref.setId)) {
-          throw new Error(
-            `"${s.filename}" berasal dari set yang berbeda — pastikan semua gambar berasal dari satu operasi Sembunyikan yang sama.`
-          );
-        }
-        if (s.n !== ref.n || s.k !== ref.k) {
-          throw new Error(`Parameter N atau K tidak konsisten antar file.`);
-        }
-      }
-
-      // 3. Validasi: tidak ada duplikat x
-      const xs = extracted.map((s) => s.x);
-      const uniqueXs = new Set(xs);
-      if (uniqueXs.size < xs.length) {
-        throw new Error("Terdapat bagian duplikat (x yang sama). Gunakan gambar yang berbeda.");
-      }
-
-      // 4. Validasi: jumlah bagian unik >= K
-      if (uniqueXs.size < ref.k) {
+      if (!isSetConsistent) {
         throw new Error(
-          `Hanya ${uniqueXs.size} bagian unik tersedia, sedangkan ${ref.k} dibutuhkan untuk pemulihan.`
+          "Berkas gambar berasal dari set rahasia yang berbeda. Pastikan semua gambar berasal dari pembagian yang sama."
         );
       }
 
-      // 5. Combine Shamir
-      setProgress("Merekonstruksi rahasia dengan interpolasi Lagrange...");
-      const shares: Share[] = extracted.slice(0, ref.k).map((s) => ({ x: s.x, y: s.data }));
-      const payload = combine(shares);
+      if (uniqueXCount < requiredK) {
+        throw new Error(
+          `Baru ${uniqueXCount} bagian unik terkumpul. Dibutuhkan minimal ${requiredK} bagian untuk membuka rahasia.`
+        );
+      }
 
-      // 6. Unwrap payload
+      // Ambil K bagian pertama yang unik
+      const seenX = new Set<number>();
+      const sharesToUse: Share[] = [];
+
+      for (const item of validShares) {
+        if (!seenX.has(item.x!) && item.data) {
+          seenX.add(item.x!);
+          sharesToUse.push({ x: item.x!, y: item.data });
+        }
+        if (sharesToUse.length === requiredK) break;
+      }
+
+      // Rekonstruksi Shamir
+      const payload = combine(sharesToUse);
       const { meta, data } = unwrapPayload(payload);
 
       if (meta.type === "text") {
@@ -89,110 +194,239 @@ export default function RecoverTab() {
       } else {
         const blob = new Blob([data], { type: meta.mimeType ?? "image/png" });
         const url = URL.createObjectURL(blob);
-        setResult({ type: "image", content: url, filename: meta.filename });
+        setResult({
+          type: "image",
+          content: url,
+          blob,
+          filename: meta.filename ?? "recovered-image.png",
+        });
       }
-
-      setProgress("");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [files]);
+  }, [validShares, isSetConsistent, uniqueXCount, requiredK]);
+
+  const copyText = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div className="space-y-6">
-      {/* Pilih File */}
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Pilih File PNG (minimal K file)
-        </label>
+      {/* Dropzone Upload */}
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={handleDrop}
+        className={`relative rounded-xl border-2 border-dashed p-6 text-center transition-all ${
+          isDragging
+            ? "border-zinc-900 bg-zinc-100"
+            : "border-zinc-200 bg-zinc-50/50 hover:border-zinc-300"
+        }`}
+      >
         <input
           type="file"
           accept="image/png"
           multiple
-          onChange={(e) => {
-            setFiles(Array.from(e.target.files ?? []));
-            setResult(null);
-            setError("");
-          }}
-          className="block w-full text-sm text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+          id="recover-file-input"
+          className="hidden"
+          onChange={handleFileChange}
         />
-        {files.length > 0 && (
-          <div className="mt-2 space-y-1">
-            {files.map((f, i) => (
-              <div key={i} className="flex items-center gap-2 text-xs text-gray-500">
-                <span className="text-indigo-400">📄</span>
-                <span className="font-mono">{f.name}</span>
-                <span className="text-gray-300">·</span>
-                <span>{(f.size / 1024).toFixed(1)} KB</span>
+        <label
+          htmlFor="recover-file-input"
+          className="flex flex-col items-center justify-center cursor-pointer space-y-2"
+        >
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-zinc-700 shadow-sm border border-zinc-200/80">
+            <UploadCloud className="h-6 w-6" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-zinc-900">
+              Tarik & Lepas gambar PNG ke sini
+            </p>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              atau klik untuk memilih beberapa berkas PNG sekaligus
+            </p>
+          </div>
+          <span className="text-[11px] text-zinc-400">
+            Hanya berkas asli PNG tanpa kompresi JPEG
+          </span>
+        </label>
+      </div>
+
+      {/* Daftar Berkas Terinspeksi */}
+      {files.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold uppercase tracking-wider text-zinc-500">
+              Berkas Terdeteksi ({validShares.length} / {files.length} Valid)
+            </span>
+            {isInspecting && (
+              <span className="flex items-center gap-1 text-zinc-400">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                Mengekstrak bit LSB...
+              </span>
+            )}
+          </div>
+
+          <div className="divide-y divide-zinc-100 rounded-xl border border-zinc-200 bg-white overflow-hidden">
+            {inspected.map((item, idx) => (
+              <div
+                key={idx}
+                className="flex items-center justify-between p-3 text-xs hover:bg-zinc-50/50"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {item.valid ? (
+                    <FileCheck2 className="h-4 w-4 text-emerald-600 flex-shrink-0" />
+                  ) : (
+                    <FileX className="h-4 w-4 text-red-500 flex-shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-zinc-900">
+                      {item.file.name}
+                    </p>
+                    <p className="text-[11px] text-zinc-500">
+                      {item.valid ? (
+                        <>
+                          Bagian <strong className="text-zinc-800">#{item.x}</strong> dari {item.n} · Set{" "}
+                          <span className="font-mono font-medium">#{formatSetId(item.setId!)}</span> ·{" "}
+                          {formatBytes(item.file.size)}
+                        </>
+                      ) : (
+                        <span className="text-red-600">{item.error}</span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleRemoveFile(idx)}
+                  className="p-1 text-zinc-400 hover:text-red-600 transition-colors"
+                  title="Hapus gambar ini"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </div>
             ))}
           </div>
-        )}
-      </div>
 
-      {/* Pesan */}
-      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-        <span className="font-semibold">Catatan:</span> Gunakan hanya file PNG yang diunduh langsung dari aplikasi ini.
-        File yang dikompresi ulang atau dikonversi ke JPEG tidak akan bisa dibaca.
-      </div>
+          {/* Status Ambang K */}
+          {firstShare && (
+            <div
+              className={`rounded-xl border p-3 text-xs flex items-center justify-between ${
+                hasEnoughShares
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                  : "border-amber-200 bg-amber-50 text-amber-900"
+              }`}
+            >
+              <div>
+                <span className="font-semibold">
+                  {hasEnoughShares ? "✓ Syarat Ambang Terpenuhi" : "⏳ Menunggu Bagian Tambahan"}
+                </span>
+                <p className="text-[11px] mt-0.5 opacity-80">
+                  Tersedia <strong className="font-mono">{uniqueXCount}</strong> bagian unik dari syarat minimal{" "}
+                  <strong className="font-mono">{requiredK}</strong> bagian (Skema {requiredK} dari {totalN}).
+                </p>
+              </div>
+              <span className="font-mono text-xs font-bold px-2.5 py-1 rounded-lg bg-white/70 shadow-2xs">
+                {uniqueXCount} / {requiredK}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* Error */}
+      {/* Error alert */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
-          {error}
+        <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+          <span>{error}</span>
         </div>
       )}
 
       {/* Tombol Pulihkan */}
       <button
+        type="button"
         onClick={handleRecover}
-        disabled={loading || files.length === 0}
-        className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white font-semibold py-3 rounded-lg transition-colors"
+        disabled={loading || !hasEnoughShares}
+        className="w-full flex items-center justify-center gap-2 rounded-xl bg-zinc-900 py-3.5 px-4 text-sm font-medium text-white shadow-sm transition-all hover:bg-zinc-800 active:scale-[0.99] disabled:opacity-40"
       >
-        {loading ? progress || "Memproses..." : "🔓 Pulihkan Rahasia"}
+        {loading ? (
+          <>
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            <span>Rekonstruksi Lagrange GF(256)...</span>
+          </>
+        ) : (
+          <>
+            <LockOpen className="h-4 w-4" />
+            <span>Buka & Pulihkan Rahasia</span>
+          </>
+        )}
       </button>
 
-      {/* Hasil */}
+      {/* Hasil Pemulihan */}
       {result && (
-        <div className="border border-emerald-200 bg-emerald-50 rounded-xl p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <span className="text-emerald-600 text-lg">✅</span>
-            <h3 className="font-semibold text-emerald-800">Rahasia Berhasil Dipulihkan</h3>
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-white">
+                <Check className="h-3.5 w-3.5" />
+              </div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-emerald-900">
+                Rahasia Berhasil Terbuka
+              </h3>
+            </div>
+            {result.type === "text" && (
+              <button
+                type="button"
+                onClick={() => copyText(result.content)}
+                className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-800 transition-colors hover:bg-emerald-50"
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-600" />
+                    <span>Tersalin!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5 text-zinc-500" />
+                    <span>Salin</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
 
           {result.type === "text" ? (
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Teks rahasia:</label>
-              <pre className="bg-white border border-gray-200 rounded-lg p-3 text-sm font-mono whitespace-pre-wrap break-words max-h-64 overflow-auto">
+            <div className="relative">
+              <pre className="max-h-56 overflow-auto rounded-xl border border-emerald-200/80 bg-white p-3.5 font-mono text-xs text-zinc-900 whitespace-pre-wrap break-words leading-relaxed">
                 {result.content}
               </pre>
-              <button
-                onClick={() => navigator.clipboard.writeText(result.content)}
-                className="mt-2 text-xs bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium px-3 py-1.5 rounded-lg transition-colors"
-              >
-                📋 Salin ke clipboard
-              </button>
             </div>
           ) : (
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                Gambar rahasia {result.filename ? `(${result.filename})` : ""}:
-              </label>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={result.content}
-                alt="Gambar rahasia yang dipulihkan"
-                className="max-w-full max-h-64 rounded-lg border border-gray-200 object-contain"
-              />
-              <a
-                href={result.content}
-                download={result.filename ?? "recovered.png"}
-                className="inline-block mt-2 text-xs bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 font-medium px-3 py-1.5 rounded-lg transition-colors"
+            <div className="space-y-3">
+              <div className="overflow-hidden rounded-xl border border-emerald-200 bg-white p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={result.content}
+                  alt="Gambar terpulihkan"
+                  className="max-h-64 w-full rounded-lg object-contain"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => downloadBlob(result.blob!, result.filename!)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-zinc-800"
               >
-                ⬇ Unduh Gambar
-              </a>
+                <Download className="h-3.5 w-3.5" />
+                <span>Unduh {result.filename}</span>
+              </button>
             </div>
           )}
         </div>

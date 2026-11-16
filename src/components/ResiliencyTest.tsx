@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { CheckCircle2, XCircle, Play, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import { combine, type Share } from "@/lib/shamir";
 import { extractShare } from "@/lib/steganography";
 import { unwrapPayload, uint8Equal, subsets } from "@/lib/utils";
@@ -17,6 +18,7 @@ interface TestResult {
 }
 
 export default function ResiliencyTest({ pngBlobs, threshold }: ResiliencyTestProps) {
+  const [isOpen, setIsOpen] = useState(false);
   const [results, setResults] = useState<TestResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
@@ -24,47 +26,52 @@ export default function ResiliencyTest({ pngBlobs, threshold }: ResiliencyTestPr
   const runTest = useCallback(async () => {
     setLoading(true);
     setResults(null);
-    setProgress("Mengekstrak semua bagian...");
+    setProgress("Mengekstrak data dari PNG...");
 
     try {
-      // Ekstrak semua bagian dulu
       const extracted: { x: number; data: Uint8Array; setId: Uint8Array; k: number; n: number }[] = [];
       for (const { x, blob } of pngBlobs) {
         const r = await extractShare(blob);
-        if (!r) throw new Error(`Gagal ekstrak bagian ${x}`);
+        if (!r) throw new Error(`Gagal ekstrak bagian #${x}`);
         extracted.push({ x, data: r.shareData, setId: r.header.setId, k: r.header.k, n: r.header.n });
       }
 
       const allResults: TestResult[] = [];
       const n = pngBlobs.length;
 
-      // Uji semua subset dari ukuran 1 hingga n
       for (let size = 1; size <= n; size++) {
         const combos = subsets(extracted, size);
-        setProgress(`Menguji kombinasi ukuran ${size}/${n} (${combos.length} kombinasi)...`);
+        setProgress(`Menguji kombinasi subset (${size}/${n})...`);
 
         for (const combo of combos) {
           const indices = combo.map((c) => c.x);
           try {
-            // Validasi set ID
             const ref = combo[0];
             for (const c of combo.slice(1)) {
-              if (!uint8Equal(c.setId, ref.setId)) throw new Error("Set ID berbeda");
+              if (!uint8Equal(c.setId, ref.setId)) throw new Error("ID set tidak cocok");
             }
 
             if (combo.length < ref.k) {
-              allResults.push({ indices, success: false, error: `Butuh ${ref.k}, hanya ${combo.length}` });
+              allResults.push({
+                indices,
+                success: false,
+                error: `Bagian kurang (${combo.length}/${ref.k})`,
+              });
               continue;
             }
 
             const shares: Share[] = combo.map((c) => ({ x: c.x, y: c.data }));
             const payload = combine(shares);
             const { meta } = unwrapPayload(payload);
-            if (!meta.type) throw new Error("Payload tidak valid");
+            if (!meta.type) throw new Error("Format payload rusak");
 
             allResults.push({ indices, success: true });
           } catch (e) {
-            allResults.push({ indices, success: false, error: e instanceof Error ? e.message : String(e) });
+            allResults.push({
+              indices,
+              success: false,
+              error: e instanceof Error ? e.message : String(e),
+            });
           }
         }
       }
@@ -76,14 +83,15 @@ export default function ResiliencyTest({ pngBlobs, threshold }: ResiliencyTestPr
       setLoading(false);
       setProgress("");
     }
-  }, [pngBlobs, threshold]);
+  }, [pngBlobs]);
 
   if (pngBlobs.length === 0) return null;
 
+  const totalCombinations = Math.pow(2, pngBlobs.length) - 1;
   const successes = results?.filter((r) => r.success).length ?? 0;
   const failures = results?.filter((r) => !r.success).length ?? 0;
 
-  // Kelompokkan per ukuran
+  // Kelompokkan per ukuran bagian yang tersisa
   const bySize: Map<number, TestResult[]> = new Map();
   if (results) {
     for (const r of results) {
@@ -94,76 +102,152 @@ export default function ResiliencyTest({ pngBlobs, threshold }: ResiliencyTestPr
   }
 
   return (
-    <div className="border border-dashed border-purple-300 bg-purple-50 rounded-xl p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="font-semibold text-purple-800">🧪 Uji Ketahanan Semua Kombinasi</h3>
-          <p className="text-xs text-purple-600 mt-0.5">
-            Menguji {Math.pow(2, pngBlobs.length) - 1} kombinasi — sesuai prosedur Lampiran 1 proposal
-          </p>
+    <div className="rounded-xl border border-zinc-200/90 bg-zinc-50/60 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between p-4 text-left transition-colors hover:bg-zinc-100/60"
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-zinc-200/80 text-zinc-700">
+            <span className="text-xs font-mono font-semibold">2ⁿ</span>
+          </div>
+          <div>
+            <h4 className="text-xs font-semibold text-zinc-900">
+              Uji Semua Kombinasi ({totalCombinations} Subset)
+            </h4>
+            <p className="text-[11px] text-zinc-500">
+              Verifikasi apakah rahasia pulih saat ≥ {threshold} bagian dan terkunci saat &lt; {threshold} bagian
+            </p>
+          </div>
         </div>
-        <button
-          onClick={runTest}
-          disabled={loading}
-          className="text-sm bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white font-medium px-4 py-2 rounded-lg transition-colors"
-        >
-          {loading ? "Menguji..." : "Jalankan Uji"}
-        </button>
-      </div>
+        <div className="flex items-center gap-2 text-zinc-400">
+          <span className="text-xs">{isOpen ? "Tutup" : "Buka"}</span>
+          {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </div>
+      </button>
 
-      {progress && (
-        <p className="text-xs text-purple-700 font-mono">{progress}</p>
-      )}
-
-      {results && (
-        <div className="space-y-3">
-          {/* Ringkasan */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-green-100 border border-green-200 rounded-lg p-3 text-center">
-              <p className="text-2xl font-bold text-green-700">{successes}</p>
-              <p className="text-xs text-green-600">Kombinasi Berhasil</p>
-            </div>
-            <div className="bg-red-100 border border-red-200 rounded-lg p-3 text-center">
-              <p className="text-2xl font-bold text-red-700">{failures}</p>
-              <p className="text-xs text-red-600">Kombinasi Gagal (diharapkan)</p>
-            </div>
+      {isOpen && (
+        <div className="border-t border-zinc-200/80 p-4 space-y-4 bg-white">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <p className="text-xs text-zinc-600 leading-relaxed max-w-md">
+              Sistem mengekstrak bit LSB langsung dari gambar PNG hasil, lalu menguji apakah setiap
+              kombinasi $\ge K$ pulih sempurna dan $&lt; K$ gagal total.
+            </p>
+            <button
+              type="button"
+              onClick={runTest}
+              disabled={loading}
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-zinc-900 px-3.5 py-2 text-xs font-medium text-white transition-all hover:bg-zinc-800 disabled:opacity-50 flex-shrink-0"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>{progress || "Menguji..."}</span>
+                </>
+              ) : (
+                <>
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  <span>Mulai Pengujian</span>
+                </>
+              )}
+            </button>
           </div>
 
-          {/* Tabel per ukuran */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs border-collapse">
-              <thead>
-                <tr className="bg-purple-100 text-purple-800">
-                  <th className="border border-purple-200 px-3 py-1.5 text-left">Jumlah bagian</th>
-                  <th className="border border-purple-200 px-3 py-1.5 text-center">Total</th>
-                  <th className="border border-purple-200 px-3 py-1.5 text-center">Berhasil</th>
-                  <th className="border border-purple-200 px-3 py-1.5 text-center">Gagal</th>
-                  <th className="border border-purple-200 px-3 py-1.5 text-center">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Array.from(bySize.entries()).sort(([a], [b]) => a - b).map(([size, rows]) => {
-                  const ok = rows.filter((r) => r.success).length;
-                  const fail = rows.filter((r) => !r.success).length;
-                  const isAboveThreshold = size >= threshold;
-                  const statusOk = isAboveThreshold ? ok === rows.length : fail === rows.length;
-                  return (
-                    <tr key={size} className={statusOk ? "bg-white" : "bg-orange-50"}>
-                      <td className="border border-gray-200 px-3 py-1.5 font-mono">
-                        {size} {size >= threshold ? <span className="text-green-600">≥ K</span> : <span className="text-red-500">{"< K"}</span>}
-                      </td>
-                      <td className="border border-gray-200 px-3 py-1.5 text-center">{rows.length}</td>
-                      <td className="border border-gray-200 px-3 py-1.5 text-center text-green-700">{ok}</td>
-                      <td className="border border-gray-200 px-3 py-1.5 text-center text-red-600">{fail}</td>
-                      <td className="border border-gray-200 px-3 py-1.5 text-center">
-                        {statusOk ? "✅" : "❌"}
-                      </td>
+          {results && (
+            <div className="space-y-3 pt-2">
+              {/* Ringkasan Skor */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-2.5 text-center">
+                  <div className="flex items-center justify-center gap-1.5 text-emerald-700">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span className="text-lg font-bold">{successes}</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-800 font-medium mt-0.5">
+                    Kombinasi Berhasil (≥ {threshold} bagian)
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-2.5 text-center">
+                  <div className="flex items-center justify-center gap-1.5 text-zinc-700">
+                    <XCircle className="h-4 w-4 text-zinc-400" />
+                    <span className="text-lg font-bold">{failures}</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-600 font-medium mt-0.5">
+                    Kombinasi Ditolak (&lt; {threshold} bagian)
+                  </p>
+                </div>
+              </div>
+
+              {/* Tabel Replikasi Hasil Proposal (Tabel 3 & Gambar 5) */}
+              <div className="overflow-hidden rounded-lg border border-zinc-200 text-xs">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-zinc-50 text-zinc-600 border-b border-zinc-200 text-[11px] uppercase tracking-wider font-semibold">
+                      <th className="px-3 py-2 text-left">Bagian Tersisa</th>
+                      <th className="px-3 py-2 text-center">Hilang</th>
+                      <th className="px-3 py-2 text-center">Kombinasi</th>
+                      <th className="px-3 py-2 text-center">Hasil</th>
+                      <th className="px-3 py-2 text-center">Teori</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {Array.from(bySize.entries())
+                      .sort(([a], [b]) => b - a)
+                      .map(([size, rows]) => {
+                        const ok = rows.filter((r) => r.success).length;
+                        const isSufficient = size >= threshold;
+                        const matchedTheory = isSufficient ? ok === rows.length : ok === 0;
+
+                        return (
+                          <tr key={size} className="hover:bg-zinc-50/50">
+                            <td className="px-3 py-2 font-mono font-medium text-zinc-900">
+                              {size} {isSufficient ? (
+                                <span className="text-[10px] text-emerald-600 ml-1 font-sans font-semibold">
+                                  (≥ K)
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-zinc-400 ml-1 font-sans">
+                                  (&lt; K)
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-center text-zinc-500 font-mono">
+                              {pngBlobs.length - size}
+                            </td>
+                            <td className="px-3 py-2 text-center text-zinc-600 font-mono">
+                              {rows.length}
+                            </td>
+                            <td className="px-3 py-2 text-center font-mono">
+                              <span
+                                className={`font-semibold ${
+                                  isSufficient ? "text-emerald-600" : "text-zinc-500"
+                                }`}
+                              >
+                                {ok} / {rows.length}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              {matchedTheory ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
+                                  <CheckCircle2 className="h-3 w-3" />
+                                  100% Sesuai
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-red-600">
+                                  <XCircle className="h-3 w-3" />
+                                  Penyimpangan
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -156,3 +156,4 @@ export async function extractShare(pngBlob: Blob): Promise<ExtractResult | null>
 
   return { header, shareData };
 }
+
